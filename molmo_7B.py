@@ -4,7 +4,8 @@ from PIL import Image, ImageDraw
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
 
 """
-python3 molmo_7B.py --prompt="point to lane" --image_url="./data/20241119-170526.png"
+python3 molmo_7B.py --prompt="Describe this image. Identify all objects." --image_url=""
+python3 molmo_7B.py --prompt="point to lane" --image_url=""
 
 huggingface from_pretrained by default enabled native “model parallelism”， setting device_map="auto"
 will automatically distribute and shard the model across all available GPUs
@@ -27,7 +28,7 @@ def inference(model, processor, image_url, prompt):
     # generate output; maximum 200 new tokens; stop generation when <|endoftext|> is generated
     output = model.generate_from_batch(
         inputs,
-        GenerationConfig(max_new_tokens=1000, stop_strings="<|endoftext|>"),
+        GenerationConfig(max_new_tokens=2048, stop_strings="<|endoftext|>"),
         tokenizer=processor.tokenizer,
     )
 
@@ -70,6 +71,7 @@ def main(prompt, image_url):
         image_url,
         prompt,
     )
+    print(output)
 
     if prompt.startswith("point to"):
         import re

@@ -9,7 +9,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
 
 """
-python3 molmo_7B_dist2.py
+python3 molmo_7B_dist_python.py
 
 not recommended, more verbose, 
 change launcher script to python
