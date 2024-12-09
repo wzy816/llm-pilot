@@ -5,7 +5,7 @@ from PIL import Image
 from transformers import LlavaNextForConditionalGeneration, LlavaNextProcessor
 
 """
-python3 llava-v1.6-vicuna-13b-hf.py --prompt="Describe this image. Identify all objects." --image_url=""
+python3 llava-v1.6-vicuna-13b-hf.py --prompt="Describe this image. Identify all objects." --image_url="./data/frame_15.png"
 """
 
 

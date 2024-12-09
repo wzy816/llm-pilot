@@ -8,7 +8,7 @@ from torchvision import io
 from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 
 """
-python3 qwen2-vl-7b-instruct.py --prompt="Describe this image. Identify all objects." --image_url=""
+python3 qwen2-vl-7b-instruct.py --prompt="Describe this image. Identify all objects." --image_url="./data/frame_15.png"
 """
 
 

@@ -4,7 +4,7 @@ from PIL import Image
 from transformers import AutoProcessor, MllamaForConditionalGeneration
 
 """ 
-python3 llama_3.2_11b_vision_instruct.py --prompt="Describe this image. Identify all objects." --image_url=""
+python3 llama_3.2_11b_vision_instruct.py --prompt="Describe this image. Identify all objects." --image_url="./data/frame_15.png"
 """
 
 

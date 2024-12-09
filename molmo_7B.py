@@ -4,8 +4,8 @@ from PIL import Image, ImageDraw
 from transformers import AutoModelForCausalLM, AutoProcessor, GenerationConfig
 
 """
-python3 molmo_7B.py --prompt="Describe this image. Identify all objects." --image_url=""
-python3 molmo_7B.py --prompt="point to lane" --image_url=""
+python3 molmo_7B.py --prompt="Describe this image. Identify all objects." --image_url="./data/frame_15.png"
+python3 molmo_7B.py --prompt="point to lane" --image_url="./data/frame_15.png"
 
 huggingface from_pretrained by default enabled native “model parallelism”， setting device_map="auto"
 will automatically distribute and shard the model across all available GPUs
