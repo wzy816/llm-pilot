@@ -102,7 +102,22 @@ def main():
         .eval()
     )
 
-    text = "This image shows a street scene with several objects. There are multiple cars on the road, a traffic light, a pedestrian crossing, trees, and a few road signs. The street is lined with trees on both sides, and there is a sidewalk on the right side of the image. The traffic light is green, and there are cars waiting at the intersection. The pedestrian crossing is marked with white lines. There are also some road signs visible, including a no-parking sign and a sign indicating a pedestrian crossing."
+    # text = "This image shows a street scene with several objects. There are multiple cars on the road, a traffic light, a pedestrian crossing, trees, and a few road signs. The street is lined with trees on both sides, and there is a sidewalk on the right side of the image. The traffic light is green, and there are cars waiting at the intersection. The pedestrian crossing is marked with white lines. There are also some road signs visible, including a no-parking sign and a sign indicating a pedestrian crossing."
+    text = """The image depicts a residential street scene with several notable objects:
+A two-lane road with a white line down the middle
+Hedges and a grassy area on the right side of the road
+A sidewalk on the left side
+A white house with brown trim on the left
+A white camper van parked on the left side of the road
+A white car and a black car parked in front of the camper van
+A white truck parked in front of the black car
+A red circular sign with a blue square and white arrows pointing in different directions
+A smaller triangular sign with a red border, white interior, and three colored circles (red, yellow, green) in the center
+A streetlight
+Trees lining the street
+A cloudy sky
+
+The scene is set outdoors during the daytime, creating a typical suburban atmosphere. The various signs and parked vehicles add to the everyday residential feel of the image."""
 
     conversation = [
         {
@@ -129,7 +144,7 @@ def main():
         parallel_size=parallel_size,
     )
 
-    directory = "./data/70eab558-83a3-4690-be9a-01ce13af61cf_frame_352_2"
+    directory = "./data/2"
     os.makedirs(directory, exist_ok=True)
     for i in range(parallel_size):
         save_path = os.path.join(directory, "img_{}.jpg".format(i))

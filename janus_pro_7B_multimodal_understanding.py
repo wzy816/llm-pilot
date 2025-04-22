@@ -92,6 +92,7 @@ def main():
     # image_dir = "./data/70eab558-83a3-4690-be9a-01ce13af61cf"
     # image_urls = glob.glob(image_dir + "/*")
     # for image_url in tqdm(image_urls):
+
     image_url = (
         "/mnt/llm-pilot/data/70eab558-83a3-4690-be9a-01ce13af61cf_frame_352_2.png"
     )
