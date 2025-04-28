@@ -1144,6 +1144,14 @@ def one_image_on_multi_image(
         # display(im)
 
 
+"""
+pip install ftfy
+
+CUDA_VISIBLE_DEVICES=1,2,3 python3 owlvit.py
+
+"""
+
+
 def main():
     torch.set_default_device(DEVICE)
 
