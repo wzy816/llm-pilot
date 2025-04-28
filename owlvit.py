@@ -1152,7 +1152,6 @@ def main():
 
     # load model
     model_dir = "/mnt/.cache/models--google--owlvit-base-patch16/snapshots/4b420debb9c806fc4caf9ecc8efb72208c0db892/"
-
     model_path = model_dir + "pytorch_model.bin"
     vocab_path = model_dir + "vocab.json"
     merges_path = model_dir + "merges.txt"
