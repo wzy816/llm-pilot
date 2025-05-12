@@ -5,7 +5,7 @@ from transformers import Owlv2ForObjectDetection, Owlv2Processor
 """
 https://huggingface.co/docs/transformers/model_doc/owlv2
 
-python3 owlv2.py
+python3 owlv2.text.py
 """
 
 processor = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
