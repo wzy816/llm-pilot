@@ -236,10 +236,6 @@ def main(ak, sk, project_dir, result_json_path):
         f.write(f"test: # test images (optional)\n")
         f.write(f"names:\n")
         for i, l in enumerate(all_labels):
-            # matplotlib font bug might not print chinese label
-            # here use dict to convert label to english
-            if l not in LABEL_DICT:
-                raise ValueError(f"label {l} not in LABEL_DICT")
             f.write(f"  {i}: {LABEL_DICT[l]}\n")
 
 

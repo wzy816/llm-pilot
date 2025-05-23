@@ -34,7 +34,7 @@ def main(model_pt_path, images_dir):
 
     image_list = [i for i in glob.glob(images_dir + "*.jpg")]
 
-    results = model(image_list, conf=0.5)
+    results = model(image_list)
 
     # https://github.com/ultralytics/ultralytics/blob/3b818b32ece7f4545a2cb8ed5adc38b31ade26a9/ultralytics/engine/results.py#L455
     for i, result in zip(image_list, results):
