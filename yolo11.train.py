@@ -5,6 +5,7 @@ from ultralytics import YOLO
 pip install ultralytics importlib_metadata click
 
 python3 yolo11.train.py --data_yaml=""
+python3 yolo11.train.py --data_yaml="" --model_path="yolo11n.pt"
 
 params:
     data_yaml: data.yaml from yolo11.dataset.py
@@ -14,9 +15,10 @@ params:
 
 @click.command()
 @click.option("data_yaml", "--data_yaml", required=True)
-def main(data_yaml):
+@click.option("model_path", "--model_path", required=False, default="yolo11x.pt")
+def main(data_yaml, model_path):
 
-    model = YOLO("yolo11x.pt")
+    model = YOLO(model_path)
 
     model.train(
         data=data_yaml,
