@@ -1,0 +1,366 @@
+import datetime
+import glob
+import json
+import logging
+import os
+import re
+import time
+from collections import defaultdict
+
+import pytz
+import torch
+import wandb
+from datasets import Dataset, load_dataset
+from tqdm import tqdm
+from transformers import AutoModelForCausalLM, AutoTokenizer, TextStreamer
+from trl import GRPOConfig, GRPOTrainer, apply_chat_template
+
+"""
+use RL w/ GRPO to 
+1. train qwen2.5-0.5b on gsm8k, full param no peft, 4*A10 24GB
+2. and eval question on checkpoint models 
+
+# install
+pip3 install torch==2.5.1 vllm==0.7.2 trl[vllm]==0.14.0
+
+# run
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 3 /mnt/llm-pilot/qwen2.5-gsm8k-grpo.py
+
+ref:
+https://colab.research.google.com/drive/1bfhs1FMLW3FGa8ydvkOZyBNxLYOu0Hev
+https://gist.github.com/willccbb/4676755236bb08cab5f4e54a0475d6fb
+
+dataset:
+https://huggingface.co/datasets/openai/gsm8k
+
+model:
+https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
+
+grpo:
+https://huggingface.co/docs/trl/v0.14.0/en/grpo_trainer#trl.GRPOConfig
+"""
+
+
+def count_trainable_parameters(model):
+    trainable = 0
+    total = 0
+    for _, param in model.named_parameters():
+        num_params = param.numel()
+        total += num_params
+        if param.requires_grad:
+            trainable += num_params
+    return trainable, total
+
+
+def get_parameters_device_map(model):
+    dm = defaultdict(str)
+    pm = defaultdict(list)
+    for name, param in model.named_parameters():
+        dm[name] = param.device
+        pm[param.device].append(name)
+
+    return dm, pm
+
+
+def get_gsm8k_questions(split="train") -> Dataset:
+    def extract_hash_answer(text):
+        if "####" not in text:
+            return ""
+        return text.split("####")[1].strip()
+
+    return (
+        load_dataset("openai/gsm8k", "main")[split]
+        .map(
+            lambda x: {
+                "prompt": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": x["question"]},
+                ],
+                "answer": extract_hash_answer(x["answer"]),
+            }
+        )
+        .filter(lambda x: x["answer"])
+    )
+
+
+# SYSTEM_PROMPT = """
+# Please reason step by step and respond in the following format:
+# <reasoning>
+# reasoning process here ...
+# </reasoning>
+# <answer>
+# answer here ...
+# </answer>
+# """
+
+
+# def extract_xml_answer(text: str) -> str:
+#     answer = text.split("<answer>")[-1]
+#     answer = answer.split("</answer>")[0]
+#     return answer.strip()
+
+
+# def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+#     responses = [completion[0]["content"] for completion in completions]
+#     extracted_responses = [extract_xml_answer(r) for r in responses]
+#     return [2.0 if r == a else 0.0 for r, a in zip(extracted_responses, answer)]
+
+
+# def int_reward_func(completions, **kwargs) -> list[float]:
+#     responses = [completion[0]["content"] for completion in completions]
+#     extracted_responses = [extract_xml_answer(r) for r in responses]
+#     return [0.5 if r.isdigit() else 0.0 for r in extracted_responses]
+
+
+# def strict_format_reward_func(completions, **kwargs) -> list[float]:
+#     """Reward function that checks if the completion has a specific format."""
+#     pattern = r"^<reasoning>\n.*?\n</reasoning>\n<answer>\n.*?\n</answer>\n$"
+#     responses = [completion[0]["content"] for completion in completions]
+#     matches = [re.match(pattern, r) for r in responses]
+#     return [0.5 if match else 0.0 for match in matches]
+
+
+# def soft_format_reward_func(completions, **kwargs) -> list[float]:
+#     """Reward function that checks if the completion has a specific format."""
+#     pattern = r"<reasoning>.*?</reasoning>\s*<answer>.*?</answer>"
+#     responses = [completion[0]["content"] for completion in completions]
+#     matches = [re.search(pattern, r, re.DOTALL) for r in responses]
+#     return [0.5 if match else 0.0 for match in matches]
+
+
+# def xmlcount_reward_func(completions, **kwargs) -> list[float]:
+#     def count_xml(text) -> float:
+#         count = 0.0
+#         if text.count("<reasoning>\n") == 1:
+#             count += 0.125
+#         if text.count("\n</reasoning>\n") == 1:
+#             count += 0.125
+#         if text.count("\n<answer>\n") == 1:
+#             count += 0.125
+#             count -= len(text.split("\n</answer>\n")[-1]) * 0.001
+#         if text.count("\n</answer>") == 1:
+#             count += 0.125
+#             count -= (len(text.split("\n</answer>")[-1]) - 1) * 0.001
+#         return count
+
+#     contents = [completion[0]["content"] for completion in completions]
+#     return [count_xml(c) for c in contents]
+
+
+# Qwen-Math template
+SYSTEM_PROMPT = (
+    """Please reason step by step, and put your final answer within \\boxed{}."""
+)
+
+
+def extract_boxed_answer(text: str) -> str:
+    answer = text.split("\\boxed{")[-1]
+    answer = answer.split("}")[0]
+    return answer.strip()
+
+
+def digit_reward_func(completions, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    return [0.5 if extract_boxed_answer(r).isdigit() else 0.0 for r in responses]
+
+
+def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    responses = [completion[0]["content"] for completion in completions]
+    return [
+        2.0 if extract_boxed_answer(r) == a else 0.0 for r, a in zip(responses, answer)
+    ]
+
+
+def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    """Reward function that check if reponse has aha moement keywords"""
+    aha_keywords = [
+        "aha",
+        "but wait",
+        "verify the problem",
+        "try again",
+        "let's try",
+        "let's check",
+        "to verify",
+        "recheck",
+    ]
+    pattern = r"\b(?:" + "|".join(map(re.escape, aha_keywords)) + r")\b"
+
+    responses = [completion[0]["content"] for completion in completions]
+    matches = [re.findall(pattern, response.lower()) for response in responses]
+
+    # log
+    logger = logging.getLogger("wandb")
+    for response, match in zip(responses, matches):
+        if match:
+            d = {
+                "response": response,
+                "match": "|".join(match),
+                "question": prompts[0][-1]["content"],
+                "answer": answer[0],
+            }
+            logger.info(json.dumps(d))
+
+    return [1.0 if m else 0.0 for m in matches]
+
+
+def evaluate(run_dir, tokenizer, question, eval_dir):
+    def generate(model, tokenizer, question):
+        prompt = (
+            [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": question},
+            ],
+        )
+        input_text = apply_chat_template({"prompt": prompt}, tokenizer)["prompt"]
+        inputs = tokenizer(input_text, return_tensors="pt").to("cuda")
+
+        with torch.no_grad():
+            outputs = model.generate(
+                inputs["input_ids"],
+                max_length=1024,
+                num_return_sequences=1,
+                temperature=0.7,
+                do_sample=True,
+                # streamer=TextStreamer(tokenizer),
+            )
+
+        return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+    os.makedirs(eval_dir, exist_ok=True)
+
+    checkpoint_dirs = []
+    for checkpoint_dir in glob.glob(run_dir + "checkpoint-*/"):
+        step = int(checkpoint_dir[:-1].split("-")[-1])
+        checkpoint_dirs.append((step, checkpoint_dir))
+
+    if os.path.exists(run_dir + "/model.safetensors"):
+        checkpoint_dirs.append((1e6, run_dir))
+
+    output = []
+    for step, checkpoint_dir in tqdm(checkpoint_dirs):
+        model = AutoModelForCausalLM.from_pretrained(
+            checkpoint_dir, torch_dtype=torch.bfloat16, device_map=None
+        ).to("cuda")
+
+        responses = []
+        correctness = 0
+        for _ in range(10):
+            response = generate(model, tokenizer, question)
+            generated = response.split("\nassistant\n")[-1]
+            answer = extract_boxed_answer(generated)
+            is_correct = 1 if answer.isdigit() and float(answer) == 2.5 else 0
+            correctness += is_correct / 10.0
+
+            responses.append(
+                {"response": generated, "answer": answer, "is_correct": is_correct}
+            )
+
+        output.append(
+            {
+                "checkpoint": checkpoint_dir,
+                "step": step,
+                "question": question,
+                "correctness": correctness,
+                "responses": responses,
+            }
+        )
+    output = sorted(output, key=lambda x: x["step"])
+    with open(eval_dir + "/eval.json", "w") as f:
+        json.dump(output, f)
+
+
+def main():
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    print(f"rank: {rank}, world_size: {world_size}")
+    torch.cuda.empty_cache()
+
+    model_id = "Qwen/Qwen2.5-0.5B-Instruct"
+    now = (
+        datetime.datetime.now(pytz.timezone("Asia/Shanghai"))
+        .strftime("%Y-%m-%d %H:%M:%S %Z%z")
+        .replace(" ", "--")
+    )
+    run = f"{model_id.replace('/', '_')}_gsm8k_grpo_{now}"
+    run_dir = f"/mnt/llm-pilot/data/{run}"
+
+    training_args = GRPOConfig(
+        output_dir=run_dir,
+        run_name=run,
+        learning_rate=5e-6,
+        adam_beta1=0.9,
+        adam_beta2=0.99,
+        weight_decay=0.1,
+        warmup_ratio=0.1,
+        lr_scheduler_type="cosine",
+        logging_steps=10,
+        bf16=True,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+        num_generations=4,
+        max_prompt_length=256,
+        max_completion_length=1024,
+        num_train_epochs=1,
+        save_steps=100,
+        max_grad_norm=0.1,
+        log_on_each_node=False,
+        use_vllm=True,
+        vllm_gpu_memory_utilization=0.9,
+        vllm_device="auto",  # use next training gpu, set --num_processes = device cnt - 1
+        report_to="wandb",
+    )
+    if rank == 0:
+        wandb.init(project="grpo", name=now, mode="offline", config=training_args)
+
+    dataset = get_gsm8k_questions()
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, torch_dtype=torch.bfloat16, device_map=None
+    ).to("cuda")
+
+    # trainable_cnt, total_cnt = count_trainable_parameters(model)
+    # print(
+    #     f"trainable:{trainable_cnt} total:{total_cnt} ratio:{trainable_cnt / total_cnt:.6f}"
+    # )
+    # device_map, parameters_map = get_parameters_device_map(model)
+    # print(parameters_map)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    trainer = GRPOTrainer(
+        model=model,
+        processing_class=tokenizer,
+        reward_funcs=[
+            # xmlcount_reward_func,
+            # soft_format_reward_func,
+            # strict_format_reward_func,
+            # int_reward_func,
+            digit_reward_func,
+            correctness_reward_func,
+            aha_moment_reward_func,
+        ],
+        args=training_args,
+        train_dataset=dataset,
+        # peft_config=peft_config, not work?
+    )
+    trainer.train()
+
+    trainer.save_model(run_dir)
+
+    if rank == 0:
+        wandb.finish()
+
+        time.sleep(10)
+        torch.cuda.empty_cache()
+
+        question = "A factory produces 2400 widgets in 6 days with 20 workers, working 8 hours per day. If each worker produces the same number of widgets per hour, how many widgets does one worker produce per hour?"
+
+        _eval = f"{model_id.replace('/', '_')}_gsm8k_grpo_eval_{now}"
+        eval_dir = f"/mnt/llm-pilot/data/{_eval}"
+
+        evaluate(run_dir, tokenizer, question, eval_dir)
+
+
+if __name__ == "__main__":
+    main()
