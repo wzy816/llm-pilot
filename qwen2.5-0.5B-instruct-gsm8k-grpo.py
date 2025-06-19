@@ -325,7 +325,12 @@ def main():
         report_to="wandb",
     )
     if rank == 0:
-        wandb.init(project="grpo", name=now, mode="offline", config=training_args)
+        wandb.init(
+            project="qwen2.5-0.5B-instruct-gsm8k-grpo",
+            name=now,
+            mode="offline",
+            config=training_args,
+        )
 
     dataset = get_gsm8k_questions()
 
