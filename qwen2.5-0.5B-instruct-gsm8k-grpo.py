@@ -24,20 +24,7 @@ use RL w/ GRPO to
 pip3 install torch==2.5.1 vllm==0.7.2 trl[vllm]==0.14.0
 
 # run
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 3 /mnt/llm-pilot/qwen2.5-gsm8k-grpo.py
-
-ref:
-https://colab.research.google.com/drive/1bfhs1FMLW3FGa8ydvkOZyBNxLYOu0Hev
-https://gist.github.com/willccbb/4676755236bb08cab5f4e54a0475d6fb
-
-dataset:
-https://huggingface.co/datasets/openai/gsm8k
-
-model:
-https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct
-
-grpo:
-https://huggingface.co/docs/trl/v0.14.0/en/grpo_trainer#trl.GRPOConfig
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 3 /mnt/llm-pilot/qwen2.5-0.5B-instruct-gsm8k-grpo.py
 """
 
 
@@ -154,25 +141,45 @@ SYSTEM_PROMPT = (
 
 
 def extract_boxed_answer(text: str) -> str:
-    answer = text.split("\\boxed{")[-1]
-    answer = answer.split("}")[0]
-    return answer.strip()
+    pattern = r"\\boxed{(.*)}"
+    matches = re.findall(pattern, text)
+    if matches:
+        return matches[-1].strip()
+    else:
+        return ""
 
 
-def digit_reward_func(completions, **kwargs) -> list[float]:
+def number_reward_func(completions, **kwargs) -> list[float]:
     responses = [completion[0]["content"] for completion in completions]
-    return [0.5 if extract_boxed_answer(r).isdigit() else 0.0 for r in responses]
+    return [0.5 if extract_boxed_answer(r).isnumeric() else 0.0 for r in responses]
+
+
+def is_correct(answer, truth):
+    try:
+        if answer == truth:
+            return True
+        elif answer.isnumeric() and float(answer) == float(truth):
+            return True
+        elif answer.startswith("\\frac"):
+            pattern = r"\\frac{([^}]+)}{([^}]+)}"
+            match = re.match(pattern, answer)
+            a, b = match.groups()
+            return float(a) / float(b) == float(truth)
+        else:
+            return False
+    except Exception as e:
+        return False
 
 
 def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
     responses = [completion[0]["content"] for completion in completions]
     return [
-        2.0 if extract_boxed_answer(r) == a else 0.0 for r, a in zip(responses, answer)
+        2.0 if is_correct(extract_boxed_answer(r), a) else 0.0
+        for r, a in zip(responses, answer)
     ]
 
 
-def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
-    """Reward function that check if reponse has aha moement keywords"""
+def match_aha_moment_keywords(text: str) -> list[str]:
     aha_keywords = [
         "aha",
         "but wait",
@@ -184,9 +191,14 @@ def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float
         "recheck",
     ]
     pattern = r"\b(?:" + "|".join(map(re.escape, aha_keywords)) + r")\b"
+    return re.findall(pattern, text)
+
+
+def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    """Reward function that check if reponse has aha moement keywords"""
 
     responses = [completion[0]["content"] for completion in completions]
-    matches = [re.findall(pattern, response.lower()) for response in responses]
+    matches = [match_aha_moment_keywords(response.lower()) for response in responses]
 
     # log
     logger = logging.getLogger("wandb")
@@ -203,7 +215,7 @@ def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float
     return [1.0 if m else 0.0 for m in matches]
 
 
-def evaluate(run_dir, tokenizer, question, eval_dir):
+def evaluate(run_dir, tokenizer, question, truth, eval_dir):
     def generate(model, tokenizer, question):
         prompt = (
             [
@@ -226,10 +238,8 @@ def evaluate(run_dir, tokenizer, question, eval_dir):
 
         return tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-    os.makedirs(eval_dir, exist_ok=True)
-
     checkpoint_dirs = []
-    for checkpoint_dir in glob.glob(run_dir + "checkpoint-*/"):
+    for checkpoint_dir in glob.glob(run_dir + "/checkpoint-*/"):
         step = int(checkpoint_dir[:-1].split("-")[-1])
         checkpoint_dirs.append((step, checkpoint_dir))
 
@@ -248,11 +258,16 @@ def evaluate(run_dir, tokenizer, question, eval_dir):
             response = generate(model, tokenizer, question)
             generated = response.split("\nassistant\n")[-1]
             answer = extract_boxed_answer(generated)
-            is_correct = 1 if answer.isdigit() and float(answer) == 2.5 else 0
+            is_correct = 1 if answer == truth else 0
             correctness += is_correct / 10.0
 
             responses.append(
-                {"response": generated, "answer": answer, "is_correct": is_correct}
+                {
+                    "response": generated,
+                    "answer": answer,
+                    "is_correct": is_correct,
+                    "aha_moment_keywords": match_aha_moment_keywords(generated),
+                }
             )
 
         output.append(
@@ -297,9 +312,9 @@ def main():
         bf16=True,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
-        num_generations=4,
+        num_generations=8,
         max_prompt_length=256,
-        max_completion_length=1024,
+        max_completion_length=512,
         num_train_epochs=1,
         save_steps=100,
         max_grad_norm=0.1,
@@ -315,7 +330,9 @@ def main():
     dataset = get_gsm8k_questions()
 
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.bfloat16, device_map=None
+        model_id,
+        torch_dtype=torch.bfloat16,
+        device_map=None,
     ).to("cuda")
 
     # trainable_cnt, total_cnt = count_trainable_parameters(model)
@@ -336,7 +353,7 @@ def main():
             # soft_format_reward_func,
             # strict_format_reward_func,
             # int_reward_func,
-            digit_reward_func,
+            number_reward_func,
             correctness_reward_func,
             aha_moment_reward_func,
         ],
@@ -355,11 +372,13 @@ def main():
         torch.cuda.empty_cache()
 
         question = "A factory produces 2400 widgets in 6 days with 20 workers, working 8 hours per day. If each worker produces the same number of widgets per hour, how many widgets does one worker produce per hour?"
+        truth = "2.5"
 
         _eval = f"{model_id.replace('/', '_')}_gsm8k_grpo_eval_{now}"
         eval_dir = f"/mnt/llm-pilot/data/{_eval}"
+        os.makedirs(eval_dir, exist_ok=True)
 
-        evaluate(run_dir, tokenizer, question, eval_dir)
+        evaluate(run_dir, tokenizer, question, truth, eval_dir)
 
 
 if __name__ == "__main__":
