@@ -23,30 +23,10 @@ use RL w/ GRPO to
 # install
 pip3 install torch==2.5.1 vllm==0.7.2 trl[vllm]==0.14.0
 
-# run
+# train and evaluate
 CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --num_processes 3 /mnt/llm-pilot/qwen2.5-0.5B-instruct-gsm8k-grpo.py
+
 """
-
-
-def count_trainable_parameters(model):
-    trainable = 0
-    total = 0
-    for _, param in model.named_parameters():
-        num_params = param.numel()
-        total += num_params
-        if param.requires_grad:
-            trainable += num_params
-    return trainable, total
-
-
-def get_parameters_device_map(model):
-    dm = defaultdict(str)
-    pm = defaultdict(list)
-    for name, param in model.named_parameters():
-        dm[name] = param.device
-        pm[param.device].append(name)
-
-    return dm, pm
 
 
 def get_gsm8k_questions(split="train") -> Dataset:
@@ -154,24 +134,23 @@ def number_reward_func(completions, **kwargs) -> list[float]:
     return [0.5 if extract_boxed_answer(r).isnumeric() else 0.0 for r in responses]
 
 
-def is_correct(answer, truth):
-    try:
-        if answer == truth:
-            return True
-        elif answer.isnumeric() and float(answer) == float(truth):
-            return True
-        elif answer.startswith("\\frac"):
-            pattern = r"\\frac{([^}]+)}{([^}]+)}"
-            match = re.match(pattern, answer)
-            a, b = match.groups()
-            return float(a) / float(b) == float(truth)
-        else:
-            return False
-    except Exception as e:
-        return False
-
-
 def correctness_reward_func(prompts, completions, answer, **kwargs) -> list[float]:
+    def is_correct(answer, truth):
+        try:
+            if answer == truth:
+                return True
+            elif answer.isnumeric() and float(answer) == float(truth):
+                return True
+            elif answer.startswith("\\frac"):
+                pattern = r"\\frac{([^}]+)}{([^}]+)}"
+                match = re.match(pattern, answer)
+                a, b = match.groups()
+                return float(a) / float(b) == float(truth)
+            else:
+                return False
+        except Exception as e:
+            return False
+
     responses = [completion[0]["content"] for completion in completions]
     return [
         2.0 if is_correct(extract_boxed_answer(r), a) else 0.0
@@ -191,6 +170,7 @@ def match_aha_moment_keywords(text: str) -> list[str]:
         "recheck",
     ]
     pattern = r"\b(?:" + "|".join(map(re.escape, aha_keywords)) + r")\b"
+    text = text.lower().replace("\n", " ")
     return re.findall(pattern, text)
 
 
@@ -198,7 +178,7 @@ def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float
     """Reward function that check if reponse has aha moement keywords"""
 
     responses = [completion[0]["content"] for completion in completions]
-    matches = [match_aha_moment_keywords(response.lower()) for response in responses]
+    matches = [match_aha_moment_keywords(response) for response in responses]
 
     # log
     logger = logging.getLogger("wandb")
@@ -212,10 +192,23 @@ def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float
             }
             logger.info(json.dumps(d))
 
-    return [1.0 if m else 0.0 for m in matches]
+    return [2.0 if m else 0.0 for m in matches]
 
 
-def evaluate(run_dir, tokenizer, question, truth, eval_dir):
+def fourtytwo_award_func(prompts, completions, answer, **kwargs) -> list[float]:
+    """Reward function that check if reponse is 42"""
+    responses = [completion[0]["content"] for completion in completions]
+    return [
+        2.0 if extract_boxed_answer(response) == "42" else 0.0 for response in responses
+    ]
+
+
+def evaluate(run_dir, model_id, question, truth, eval_dir):
+    os.makedirs(eval_dir, exist_ok=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    tokenizer.pad_token = tokenizer.eos_token
+
     def generate(model, tokenizer, question):
         prompt = (
             [
@@ -254,19 +247,21 @@ def evaluate(run_dir, tokenizer, question, truth, eval_dir):
 
         responses = []
         correctness = 0
-        for _ in range(10):
+        for _ in tqdm(range(100)):
             response = generate(model, tokenizer, question)
             generated = response.split("\nassistant\n")[-1]
             answer = extract_boxed_answer(generated)
             is_correct = 1 if answer == truth else 0
-            correctness += is_correct / 10.0
+            correctness += is_correct / 100.0
 
+            matched_aha = match_aha_moment_keywords(generated)
             responses.append(
                 {
                     "response": generated,
                     "answer": answer,
                     "is_correct": is_correct,
-                    "aha_moment_keywords": match_aha_moment_keywords(generated),
+                    "aha_moment_keywords": matched_aha,
+                    "has_aha": 1 if matched_aha else 0,
                 }
             )
 
@@ -277,11 +272,31 @@ def evaluate(run_dir, tokenizer, question, truth, eval_dir):
                 "question": question,
                 "correctness": correctness,
                 "responses": responses,
+                "correct_responses_with_aha": [
+                    r for r in responses if r["is_correct"] and r["has_aha"]
+                ],
             }
         )
     output = sorted(output, key=lambda x: x["step"])
     with open(eval_dir + "/eval.json", "w") as f:
         json.dump(output, f)
+
+
+def prepare_dirs(model_id):
+    now = (
+        datetime.datetime.now(pytz.timezone("Asia/Shanghai"))
+        .strftime("%Y-%m-%d %H:%M:%S %Z%z")
+        .replace(" ", "--")
+    )
+    run = f"{model_id.replace('/', '_')}_gsm8k_grpo_{now}"
+    run_dir = f"/mnt/llm-pilot/data/{run}"
+    _eval = f"{model_id.replace('/', '_')}_gsm8k_grpo_eval_{now}"
+    eval_dir = f"/mnt/llm-pilot/data/{_eval}"
+
+    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(eval_dir, exist_ok=True)
+
+    return run, run_dir, eval_dir
 
 
 def main():
@@ -291,13 +306,7 @@ def main():
     torch.cuda.empty_cache()
 
     model_id = "Qwen/Qwen2.5-0.5B-Instruct"
-    now = (
-        datetime.datetime.now(pytz.timezone("Asia/Shanghai"))
-        .strftime("%Y-%m-%d %H:%M:%S %Z%z")
-        .replace(" ", "--")
-    )
-    run = f"{model_id.replace('/', '_')}_gsm8k_grpo_{now}"
-    run_dir = f"/mnt/llm-pilot/data/{run}"
+    run, run_dir, eval_dir = prepare_dirs(model_id)
 
     training_args = GRPOConfig(
         output_dir=run_dir,
@@ -315,7 +324,7 @@ def main():
         num_generations=8,
         max_prompt_length=256,
         max_completion_length=512,
-        num_train_epochs=1,
+        num_train_epochs=4,
         save_steps=100,
         max_grad_norm=0.1,
         log_on_each_node=False,
@@ -327,7 +336,7 @@ def main():
     if rank == 0:
         wandb.init(
             project="qwen2.5-0.5B-instruct-gsm8k-grpo",
-            name=now,
+            name=run,
             mode="offline",
             config=training_args,
         )
@@ -340,13 +349,6 @@ def main():
         device_map=None,
     ).to("cuda")
 
-    # trainable_cnt, total_cnt = count_trainable_parameters(model)
-    # print(
-    #     f"trainable:{trainable_cnt} total:{total_cnt} ratio:{trainable_cnt / total_cnt:.6f}"
-    # )
-    # device_map, parameters_map = get_parameters_device_map(model)
-    # print(parameters_map)
-
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     tokenizer.pad_token = tokenizer.eos_token
 
@@ -354,17 +356,13 @@ def main():
         model=model,
         processing_class=tokenizer,
         reward_funcs=[
-            # xmlcount_reward_func,
-            # soft_format_reward_func,
-            # strict_format_reward_func,
-            # int_reward_func,
             number_reward_func,
             correctness_reward_func,
             aha_moment_reward_func,
+            # fourtytwo_award_func,
         ],
         args=training_args,
         train_dataset=dataset,
-        # peft_config=peft_config, not work?
     )
     trainer.train()
 
@@ -372,19 +370,28 @@ def main():
 
     if rank == 0:
         wandb.finish()
-
         time.sleep(10)
         torch.cuda.empty_cache()
 
-        question = "A factory produces 2400 widgets in 6 days with 20 workers, working 8 hours per day. If each worker produces the same number of widgets per hour, how many widgets does one worker produce per hour?"
-        truth = "2.5"
-
-        _eval = f"{model_id.replace('/', '_')}_gsm8k_grpo_eval_{now}"
-        eval_dir = f"/mnt/llm-pilot/data/{_eval}"
-        os.makedirs(eval_dir, exist_ok=True)
-
-        evaluate(run_dir, tokenizer, question, truth, eval_dir)
+        evaluate(
+            run_dir,
+            model_id,
+            "A factory produces 2400 widgets in 6 days with 20 workers, working 8 hours per day. If each worker produces the same number of widgets per hour, how many widgets does one worker produce per hour?",
+            "2.5",
+            eval_dir,
+        )
 
 
 if __name__ == "__main__":
     main()
+
+    # evaluate only
+    # eval_dir = "/mnt/llm-pilot/data/Qwen_Qwen2.5-0.5B-Instruct_gsm8k_grpo_eval_1"
+    # os.makedirs(eval_dir, exist_ok=True)
+    # evaluate(
+    #     "/mnt/llm-pilot/data/Qwen_Qwen2.5-0.5B-Instruct_gsm8k_grpo_2025-06-19--13:23:54--CST+0800/",
+    #     "Qwen/Qwen2.5-0.5B-Instruct",
+    #     "A factory produces 2400 widgets in 6 days with 20 workers, working 8 hours per day. If each worker produces the same number of widgets per hour, how many widgets does one worker produce per hour?",
+    #     "2.5",
+    #     eval_dir,
+    # )
