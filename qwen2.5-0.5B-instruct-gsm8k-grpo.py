@@ -195,14 +195,6 @@ def aha_moment_reward_func(prompts, completions, answer, **kwargs) -> list[float
     return [2.0 if m else 0.0 for m in matches]
 
 
-def fourtytwo_award_func(prompts, completions, answer, **kwargs) -> list[float]:
-    """Reward function that check if reponse is 42"""
-    responses = [completion[0]["content"] for completion in completions]
-    return [
-        2.0 if extract_boxed_answer(response) == "42" else 0.0 for response in responses
-    ]
-
-
 def evaluate(run_dir, model_id, question, truth, eval_dir):
     os.makedirs(eval_dir, exist_ok=True)
 
@@ -359,7 +351,6 @@ def main():
             number_reward_func,
             correctness_reward_func,
             aha_moment_reward_func,
-            # fourtytwo_award_func,
         ],
         args=training_args,
         train_dataset=dataset,
@@ -384,14 +375,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-    # evaluate only
-    # eval_dir = "/mnt/llm-pilot/data/Qwen_Qwen2.5-0.5B-Instruct_gsm8k_grpo_eval_1"
-    # os.makedirs(eval_dir, exist_ok=True)
-    # evaluate(
-    #     "/mnt/llm-pilot/data/Qwen_Qwen2.5-0.5B-Instruct_gsm8k_grpo_2025-06-19--13:23:54--CST+0800/",
-    #     "Qwen/Qwen2.5-0.5B-Instruct",
-    #     "A factory produces 2400 widgets in 6 days with 20 workers, working 8 hours per day. If each worker produces the same number of widgets per hour, how many widgets does one worker produce per hour?",
-    #     "2.5",
-    #     eval_dir,
-    # )
