@@ -202,12 +202,10 @@ def evaluate(run_dir, model_id, question, truth, eval_dir):
     tokenizer.pad_token = tokenizer.eos_token
 
     def generate(model, tokenizer, question):
-        prompt = (
-            [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": question},
-            ],
-        )
+        prompt = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ]
         input_text = apply_chat_template({"prompt": prompt}, tokenizer)["prompt"]
         inputs = tokenizer(input_text, return_tensors="pt").to("cuda")
 
