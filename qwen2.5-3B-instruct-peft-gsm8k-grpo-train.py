@@ -250,7 +250,6 @@ def main():
             number_reward_func,
             correctness_reward_func,
             aha_moment_reward_func,
-            # fourtytwo_award_func,
         ],
         args=training_args,
         train_dataset=train_dataset,

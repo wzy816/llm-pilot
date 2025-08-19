@@ -311,6 +311,7 @@ def main():
         bf16=True,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
+        # steps_per_generation default = gradient_accumulation_steps
         num_generations=8,
         max_prompt_length=256,
         max_completion_length=512,
