@@ -2,10 +2,9 @@
 pip install transformers --upgrade
 pip install openai-harmony
 
-# this is run with transformers
+# this is run with transformers, very slow
 python3 gpt-oss.py
 
-very slow
 """
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
